@@ -11,6 +11,10 @@ export function InkSurface({ annotation }: { annotation: Annotation }) {
   const [live, setLive] = useState<Stroke[] | null>(null)
   const [cursor, setCursor] = useState<Point | null>(null)
   const drawing = useRef<{ pointerId: number; points: Point[]; base: Stroke[]; laserId?: string } | null>(null)
+  const penDown = useRef(false)
+  const penAt = useRef(0)
+  const contacts = useRef(new Map<number, { x: number; y: number }>())
+  const panning = useRef(false)
   const draftRef = useRef<Stroke | null>(null)
   const liveRef = useRef<Stroke[] | null>(null)
   const sessionRef = useRef<LaserSession | null>(null)
@@ -106,8 +110,47 @@ export function InkSurface({ annotation }: { annotation: Annotation }) {
     }, strokes)
   }
 
+  function discardGesture() {
+    const gesture = drawing.current
+    drawing.current = null
+    draftRef.current = null
+    liveRef.current = null
+    setDraft(null)
+    setLive(null)
+    if (!gesture?.laserId || !sessionRef.current) return
+    const strokes = sessionRef.current.strokes.filter((stroke) => stroke.id !== gesture.laserId)
+    sessionRef.current = { ...sessionRef.current, strokes }
+    setLaser({ strokes, opacity: 1 })
+  }
+
   function onPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     if (!annotation.on || event.button !== 0) return
+    const native = event.nativeEvent
+    if (native.pointerType === 'pen') {
+      penDown.current = true
+      penAt.current = performance.now()
+      contacts.current.clear()
+      panning.current = false
+      if (drawing.current && drawing.current.pointerId !== event.pointerId) discardGesture()
+    }
+    if (palmContact(native)) return
+    if (native.pointerType === 'touch' && !penDown.current) {
+      contacts.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      if (contacts.current.size >= 2) {
+        panning.current = true
+        discardGesture()
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId)
+        } catch {
+          // The other finger is already captured. Scrolling still follows whichever finger moves.
+        }
+        return
+      }
+      if (performance.now() - penAt.current < PEN_TOUCH_GAP_MS) return
+    }
+    if (penDown.current && native.pointerType === 'touch') return
+    if (panning.current) return
+    if (drawing.current && drawing.current.pointerId !== event.pointerId) return
     try {
       event.currentTarget.setPointerCapture(event.pointerId)
     } catch {
@@ -149,8 +192,27 @@ export function InkSurface({ annotation }: { annotation: Annotation }) {
   }
 
   function onPointerMove(event: React.PointerEvent<SVGSVGElement>) {
+    const native = event.nativeEvent
+    if (native.pointerType === 'pen') penAt.current = performance.now()
+    if (native.pointerType === 'touch' && contacts.current.has(event.pointerId)) {
+      const previous = contacts.current.get(event.pointerId)
+      if (previous && panning.current) {
+        const canvas = event.currentTarget.closest('.wb-canvas')
+        if (canvas) {
+          canvas.scrollLeft -= event.clientX - previous.x
+          canvas.scrollTop -= event.clientY - previous.y
+        }
+      }
+      contacts.current.set(event.pointerId, { x: event.clientX, y: event.clientY })
+      if (panning.current) return
+    }
     const gesture = drawing.current
+    if (gesture?.pointerId === event.pointerId && palmContact(native)) {
+      discardGesture()
+      return
+    }
     if (!gesture || gesture.pointerId !== event.pointerId) {
+      if (rejectTouch(native, penDown.current, penAt.current)) return
       if (annotation.on && (erasing || lasing)) setCursor(pointFrom(event))
       return
     }
@@ -203,6 +265,14 @@ export function InkSurface({ annotation }: { annotation: Annotation }) {
   }
 
   function finish(event: React.PointerEvent<SVGSVGElement>) {
+    if (event.nativeEvent.pointerType === 'pen') {
+      penDown.current = false
+      penAt.current = performance.now()
+    }
+    if (event.nativeEvent.pointerType === 'touch') {
+      contacts.current.delete(event.pointerId)
+      if (contacts.current.size < 2) panning.current = false
+    }
     const gesture = drawing.current
     if (!gesture || gesture.pointerId !== event.pointerId) return
     drawing.current = null
@@ -242,6 +312,7 @@ export function InkSurface({ annotation }: { annotation: Annotation }) {
       aria-label={annotation.on ? 'Slide annotation' : undefined}
       onPointerDown={onPointerDown}
       onPointerEnter={(event) => {
+        if (rejectTouch(event.nativeEvent, penDown.current, penAt.current)) return
         if (annotation.on && (lasing || erasing)) setCursor(pointFrom(event))
       }}
       onPointerMove={onPointerMove}
@@ -378,6 +449,19 @@ function keepStroke(stroke: Stroke, size: BoardSize) {
   const dx = (end.x - start.x) * size.width
   const dy = (end.y - start.y) * size.height
   return Math.hypot(dx, dy) >= 3
+}
+
+const PALM_CONTACT_PX = 40
+const PEN_TOUCH_GAP_MS = 1000
+
+function palmContact(sample: PointerEvent) {
+  return sample.pointerType === 'touch' && Math.max(sample.width, sample.height) >= PALM_CONTACT_PX
+}
+
+function rejectTouch(sample: PointerEvent, penIsDown: boolean, penSeenAt: number) {
+  if (sample.pointerType !== 'touch') return false
+  if (penIsDown || performance.now() - penSeenAt < PEN_TOUCH_GAP_MS) return true
+  return palmContact(sample)
 }
 
 function clamp(value: number) {

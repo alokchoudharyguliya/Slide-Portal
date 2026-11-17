@@ -33,7 +33,7 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
           ))}
         </ul>
         <p>
-          Every slide is Markdown. Paste an image and it is added to the slide. Annotate draws with a pen, a marker, a straight line, an arrow, a stroke eraser, and an area eraser. Those strokes stay on that slide in this browser. The laser fades about a second after you lift the pointer and is not saved. Camera opens a self-view on the right of the slide.
+          Every slide is Markdown. Paste an image and it is added to the slide. Annotate draws with a pen, a marker, a straight line, an arrow, a stroke eraser, and an area eraser. A hand resting on the screen does not draw. Two fingers scroll the slide. Those strokes stay on that slide in this browser. The laser fades about a second after you lift the pointer and is not saved. Camera opens a self-view on the right of the slide.
         </p>
       </div>
     </div>
